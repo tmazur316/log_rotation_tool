@@ -2,6 +2,8 @@ package fake
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 type Archive struct {
@@ -25,6 +27,21 @@ func (a Archive) SendFile(path string) error {
 	}
 
 	a.logs[path] = string(logs)
+
+	return nil
+}
+
+func (a Archive) DeleteFolder(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+
+	for p, _ := range a.logs {
+		if strings.HasPrefix(p, abs) {
+			delete(a.logs, p)
+		}
+	}
 
 	return nil
 }

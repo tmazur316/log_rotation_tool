@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -20,8 +21,9 @@ type S3config struct {
 }
 
 type S3archive struct {
-	client *s3.S3
-	bucket string
+	client     *s3.S3
+	bucket     string
+	randSource *rand.Rand
 }
 
 func NewS3archive(config S3config) (S3archive, error) {
@@ -37,9 +39,12 @@ func NewS3archive(config S3config) (S3archive, error) {
 		return S3archive{}, err
 	}
 
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	return S3archive{
-		client: s3.New(newSession),
-		bucket: config.Bucket,
+		client:     s3.New(newSession),
+		bucket:     config.Bucket,
+		randSource: r,
 	}, nil
 }
 
@@ -53,8 +58,7 @@ func (s *S3archive) SendFile(path string) error {
 	name := split[len(split)-2]
 	now := time.Now().Format("2006_01_02_15_04_05")
 
-	key := fmt.Sprintf("%s/%s", name, now)
-
+	key := fmt.Sprintf("%s/%s_%d", name, now, s.randSource.Int())
 	_, err = s.client.PutObject(&s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -63,6 +67,37 @@ func (s *S3archive) SendFile(path string) error {
 
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (s *S3archive) DeleteFolder(path string) error {
+	split := strings.Split(path, "/")
+
+	key := ""
+	if len(split) >= 1 {
+		key = split[len(split)-1]
+	}
+
+	list, err := s.client.ListObjectsV2(&s3.ListObjectsV2Input{
+		Bucket: aws.String("test"),
+		Prefix: aws.String(key),
+	})
+
+	if err != nil {
+		return err
+	}
+
+	for _, obj := range list.Contents {
+		_, err = s.client.DeleteObject(&s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    obj.Key,
+		})
+
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
