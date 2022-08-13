@@ -4,40 +4,56 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"io/fs"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 var log = &logrus.Logger{
 	Out:       os.Stderr,
 	Formatter: new(logrus.TextFormatter),
-	Level:     logrus.InfoLevel,
+	Level:     logrus.DebugLevel,
 }
 
+var source = rand.NewSource(time.Now().UnixNano())
+
 type Rotator struct {
-	LogDirs []string
-	Archive Archive
+	LogDirs    []string
+	RotateDir  string
+	Archive    Archive
+	ReduceSize int64
 }
 
 func (r *Rotator) Rotate() error {
-	files, err := r.listFiles()
-	if err != nil {
-		return fmt.Errorf("rotator.listFiles failed: %w", err)
-	}
-
-	for _, file := range files {
-		if err := r.Archive.SendFile(file); err != nil {
-			log.WithError(err).WithField("file", file).Error("failed to send file to Archive")
-			continue
-		}
-
-		err := os.Remove(file)
+	err := filepath.WalkDir(r.RotateDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			log.WithError(err).WithField("file", file).Error("os.Remove file failed")
-			continue
+			log.WithError(err).Infof("skipping invalid path: %s", path)
+
+			return fs.SkipDir
 		}
 
-		log.WithField("file", file).Info("log file rotated")
+		if d.IsDir() {
+			return nil
+		}
+
+		if err := r.Archive.SendFile(path); err != nil {
+			log.WithError(err).WithField("file", path).Error("failed to send file to Archive")
+		}
+
+		err = os.Remove(path)
+		if err != nil {
+			log.WithError(err).WithField("file", path).Error("os.Remove file failed")
+		}
+
+		log.WithField("file", path).Info("log file rotated")
+
+		return nil
+	})
+
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -94,6 +110,37 @@ func (r *Rotator) listFiles() ([]string, error) {
 	return files, nil
 }
 
+func (r *Rotator) ReduceFiles() error {
+	files, err := r.listFiles()
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		split := strings.Split(file, "/")
+		name := split[len(split)-2]
+		rotatePath := fmt.Sprintf("%s/%s", r.RotateDir, name)
+
+		info, err := os.Stat(file)
+		if err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(rotatePath, os.ModePerm); err != nil {
+			return err
+		}
+
+		if info.Size() >= r.ReduceSize {
+			if err := os.Rename(file, fmt.Sprintf("%s/%d", rotatePath, source.Int63())); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 type Archive interface {
 	SendFile(filepath string) error
+	DeleteFolder(filepath string) error
 }
